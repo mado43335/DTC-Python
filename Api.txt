@@ -1,0 +1,70 @@
+import imghdr
+import os
+from flask import Flask, render_template, request, redirect, url_for, abort, send_from_directory
+from werkzeug.utils import secure_filename
+from PIL import Image
+import pytesseract
+import cv2
+from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.models import load_model
+import numpy as np
+
+
+model = load_model("RMark.h5")
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024
+app.config['UPLOAD_EXTENSIONS'] = ['.jpg', '.png', '.gif']
+app.config['UPLOAD_PATH'] = 'uploads'
+
+
+def predict(IMG_PATH):
+    img = cv2.imread(IMG_PATH)
+    image = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    image = cv2.resize(image, (321, 229))
+    image = image.astype("float") / 255.0
+    image = img_to_array(image)
+    image = np.expand_dims(image, axis=0)
+    pred = model.predict(image)
+    pred = pred.argmax(axis=1)[0]
+    label = "Fake" if pred == 0 else "Real"
+    color = (0, 0, 255) if pred == 0 else (0, 255, 0)
+    image = cv2.resize(image, (128, 128))
+    cv2.putText(image, label, (3, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    cv2.imshow(image)
+
+
+def validate_image(stream):
+    header = stream.read(512)  # 512 bytes should be enough for a header check
+    stream.seek(0)  # reset stream pointer
+    format = imghdr.what(None, header)
+    if not format:
+        return None
+    return '.' + (format if format != 'jpeg' else 'jpg')
+
+
+@app.route('/')
+def index():
+    files = os.listdir(app.config['UPLOAD_PATH'])
+    return render_template('index.html', files=files)
+
+
+@app.route('/', methods=['POST'])
+def upload_files():
+    uploaded_file = request.files['file']
+    filename = secure_filename(uploaded_file.filename)
+    if filename != '':
+        file_ext = os.path.splitext(filename)[1]
+        if file_ext not in app.config['UPLOAD_EXTENSIONS'] or file_ext != validate_image(uploaded_file.stream):
+            abort(400)
+        uploaded_file.save(os.path.join(app.config['UPLOAD_PATH'], filename))
+    pred = predict(filename)
+    return redirect(url_for('index'))
+
+
+@app.route('/uploads/<filename>')
+def upload(filename):
+    return send_from_directory(app.config['UPLOAD_PATH'], filename)
+
+
+if __name__ == '__main__':
+    app.run()
